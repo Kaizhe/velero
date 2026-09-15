@@ -712,6 +712,44 @@ func TestServiceActionExecute(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "If a port name in last-applied-configuration is a non-string value that stringifies to match a real port name, it should not falsely preserve that port's NodePort.",
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						"kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"ports":[{"nodePort":30001,"name":true}]}}`,
+					},
+				},
+				Spec: corev1api.ServiceSpec{
+					Type: corev1api.ServiceTypeNodePort,
+					Ports: []corev1api.ServicePort{
+						{
+							Name:     "true",
+							NodePort: 30001,
+						},
+					},
+				},
+			},
+			restore: builder.ForRestore(api.DefaultNamespace, "").PreserveNodePorts(false).Result(),
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						"kubectl.kubernetes.io/last-applied-configuration": `{"spec":{"ports":[{"nodePort":30001,"name":true}]}}`,
+					},
+				},
+				Spec: corev1api.ServiceSpec{
+					Type: corev1api.ServiceTypeNodePort,
+					Ports: []corev1api.ServicePort{
+						{
+							Name:     "true",
+							NodePort: 0,
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, test := range tests {

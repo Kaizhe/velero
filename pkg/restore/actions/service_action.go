@@ -193,8 +193,11 @@ func deleteNodePorts(service *corev1api.Service) error {
 						if !ok {
 							// unnamed port
 							unnamedPortInts.Insert(nodePortInt)
-						} else {
-							explicitNodePorts.Insert(fmt.Sprint(portName))
+						} else if name, ok := portName.(string); ok {
+							// spec.ports[].name must be a string in a valid Service, so
+							// silently skip any non-string value rather than coercing it,
+							// which could otherwise create a false match with a real port name.
+							explicitNodePorts.Insert(name)
 						}
 					}
 				}
