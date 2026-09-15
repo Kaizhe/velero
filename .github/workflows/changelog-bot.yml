@@ -1,0 +1,148 @@
+name: Changelog bot
+
+# Lets a maintainer add a missing changelog entry to an open PR by commenting
+# `/changelog <description>`, per our changelog requirements
+# (see hack/changelog-check.sh and https://velero.io/docs/main/code-standards/#adding-a-changelog).
+#
+# Usage:
+#   /changelog Fixed a bug that caused X to happen
+#
+# If no description is given, the PR title is used instead, matching the
+# default behavior of `make new-changelog`.
+#
+# The file is created at changelogs/unreleased/<PR_NUMBER>-<github_username>,
+# where <github_username> is the PR **author's** login (not the commenter's),
+# matching the convention used by `make new-changelog` and enforced by
+# hack/changelog-check.sh. Re-running `/changelog` on the same PR overwrites
+# the same file, since the filename only depends on the PR number and author.
+#
+# This only works for PRs whose head branch lives in this repository (not
+# forks), since a fork's branch cannot be pushed to with the default
+# GITHUB_TOKEN. For fork PRs, the bot replies with instructions to run
+# `make new-changelog` locally instead.
+#
+# The commit is signed off with the bot's identity so it passes the DCO
+# check, mirroring the resign step in .github/workflows/backport.yml.
+#
+# Only repository owners, members, and collaborators may trigger this
+# command. See .github/workflows/backport.yml for the equivalent pattern
+# used for /backport and /cherrypick.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  changelog:
+    name: Add changelog entry
+    if: >
+      github.repository == 'velero-io/velero' &&
+      github.event.issue.pull_request != '' &&
+      github.event.issue.state == 'open' &&
+      contains(
+        fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+        github.event.comment.author_association
+      ) &&
+      startsWith(github.event.comment.body, '/changelog')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the changelog commit to the PR branch
+      pull-requests: write # comment on the PR
+    steps:
+      - name: Get PR details
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          pr_json=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author,title,headRefName,isCrossRepository)
+          author=$(jq -r '.author.login' <<< "$pr_json")
+          title=$(jq -r '.title' <<< "$pr_json")
+          branch=$(jq -r '.headRefName' <<< "$pr_json")
+          is_fork=$(jq -r '.isCrossRepository' <<< "$pr_json")
+
+          {
+            echo "author=${author}"
+            echo "branch=${branch}"
+            echo "is_fork=${is_fork}"
+          } >> "$GITHUB_OUTPUT"
+          # Title may contain characters unsafe for GITHUB_OUTPUT; use a delimiter.
+          {
+            echo "title<<CHANGELOG_EOF"
+            echo "$title"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Reject fork pull requests
+        if: steps.pr.outputs.is_fork == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+            "The \`/changelog\` command only supports pull requests whose branch lives in this repository. Since this PR is from a fork, please run \`make new-changelog CHANGELOG_BODY=\"...\"\` locally, commit the generated \`changelogs/unreleased/\` file, and push it to your branch instead."
+          exit 1
+
+      - name: Determine changelog body
+        id: body
+        if: steps.pr.outputs.is_fork != 'true'
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+        run: |
+          # Strip the leading /changelog token from the first line; the rest
+          # of the comment (joined into a single line) becomes the changelog
+          # description. Falls back to the PR title when nothing follows,
+          # matching `make new-changelog`'s default.
+          body=$(printf '%s' "$COMMENT_BODY" | sed -E '1s#^/changelog[[:space:]]*##' | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//')
+          if [ -z "$body" ]; then
+            body="$PR_TITLE"
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$body"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out PR branch
+        if: steps.pr.outputs.is_fork != 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+
+      - name: Add changelog file
+        if: steps.pr.outputs.is_fork != 'true'
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+          GH_LOGIN: ${{ steps.pr.outputs.author }}
+          CHANGELOG_BODY: ${{ steps.body.outputs.body }}
+        run: |
+          mkdir -p ./changelogs/unreleased/
+          echo "$CHANGELOG_BODY" > "./changelogs/unreleased/${PR_NUMBER}-${GH_LOGIN}"
+
+      - name: Commit and push changelog
+        if: steps.pr.outputs.is_fork != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          GH_LOGIN: ${{ steps.pr.outputs.author }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "changelogs/unreleased/${PR_NUMBER}-${GH_LOGIN}"
+
+          if git diff --cached --quiet; then
+            echo "Changelog file is unchanged; nothing to commit."
+            exit 0
+          fi
+
+          # Sign off so the commit passes the DCO check.
+          git commit --signoff -m "Add changelog for #${PR_NUMBER}"
+          git push
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+            "Added \`changelogs/unreleased/${PR_NUMBER}-${GH_LOGIN}\`. :white_check_mark:"
