@@ -130,13 +130,16 @@ func (nt *nsTracker) init(
 		// (Or)LabelSelectors, so check it upfront once instead of
 		// repeating it in every branch below.
 		if !nt.namespaceFilter.ShouldInclude(namespace.GetName()) {
+			nt.logger.Debugf("Skip namespace %s, because it doesn't match backup namespace filter (glob rules) includes=%q excludes=%q.",
+				namespace.GetName(), nt.namespaceFilter.IncludesString(), nt.namespaceFilter.ExcludesString(),
+			)
 			continue
 		}
 
 		if nt.singleLabelSelector != nil &&
 			nt.singleLabelSelector.Matches(labels.Set(namespace.GetLabels())) {
-			nt.logger.Debugf("Track namespace %s, because its labels match backup LabelSelector.",
-				namespace.GetName(),
+			nt.logger.Debugf("Track namespace %s, because its labels match backup LabelSelector %q.",
+				namespace.GetName(), nt.singleLabelSelector.String(),
 			)
 
 			nt.track(namespace.GetName())
@@ -146,8 +149,8 @@ func (nt *nsTracker) init(
 		if len(nt.orLabelSelector) > 0 {
 			for _, selector := range nt.orLabelSelector {
 				if selector.Matches(labels.Set(namespace.GetLabels())) {
-					nt.logger.Debugf("Track namespace %s, because its labels match the backup OrLabelSelector.",
-						namespace.GetName(),
+					nt.logger.Debugf("Track namespace %s, because its labels match the backup OrLabelSelector %q.",
+						namespace.GetName(), selector.String(),
 					)
 					nt.track(namespace.GetName())
 					continue
@@ -164,8 +167,8 @@ func (nt *nsTracker) init(
 			continue
 		}
 
-		nt.logger.Debugf("Track namespace %s, because its name match the backup namespace filter.",
-			namespace.GetName(),
+		nt.logger.Debugf("Track namespace %s, because its name matches backup namespace filter (glob rules) includes=%q excludes=%q.",
+			namespace.GetName(), nt.namespaceFilter.IncludesString(), nt.namespaceFilter.ExcludesString(),
 		)
 		nt.track(namespace.GetName())
 	}
