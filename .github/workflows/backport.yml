@@ -36,6 +36,10 @@ name: Backport merged pull request
 # the bot's Signed-off-by trailer via `git rebase --signoff`, so the DCO
 # check always passes regardless of whether the original commit had one.
 #
+# Once a backport PR itself is merged, its source branch (named
+# `backport-<pr>-to-<target>` by korthout/backport-action's default
+# `branch_name` template) is no longer needed, so it is deleted automatically.
+#
 # See: https://github.com/velero-io/velero/issues/9603
 
 on:
@@ -258,3 +262,39 @@ jobs:
             fi
             git push --force-with-lease origin "HEAD:${branch}"
           done
+
+  # ── Post-merge: clean up a merged backport PR's branch ──────────────────────
+  # korthout/backport-action pushes its branches (named `backport-<pr>-to-
+  # <target>` by default) to this repository, never to a fork, so they can
+  # always be safely deleted here once their PR is merged.
+  cleanup-backport-branch:
+    name: Delete merged backport branch
+    if: >
+      github.repository == 'velero-io/velero' &&
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.merged &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'backport-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # delete the merged backport branch
+    steps:
+      - name: Delete backport branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          # Defense in depth: only ever delete branches matching the exact
+          # naming template backport-action uses, even though the job-level
+          # `if` already restricts this to refs starting with "backport-".
+          if [[ ! "$BRANCH" =~ ^backport-[0-9]+-to-.+$ ]]; then
+            echo "::notice::Branch '${BRANCH}' does not match the expected backport branch pattern; skipping deletion."
+            exit 0
+          fi
+
+          if gh api --method DELETE "repos/${REPO}/git/refs/heads/${BRANCH}"; then
+            echo "Deleted branch '${BRANCH}'."
+          else
+            echo "::warning::Failed to delete branch '${BRANCH}' (it may already be gone, e.g. via 'Automatically delete head branches')."
+          fi
