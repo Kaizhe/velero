@@ -225,3 +225,42 @@ func TestReplaceImageNameSkipsNonStringImageField(t *testing.T) {
 	// coerced into a string.
 	assert.Equal(t, float64(5000), containers[0].(map[string]any)["image"])
 }
+
+// TestReplaceImageNameSkipsNonMapContainerEntry is a regression test for the
+// same untrusted-content trust boundary as
+// TestReplaceImageNameSkipsNonStringImageField, but for the container list
+// entry itself rather than its "image" field: a crafted/malformed backup's
+// spec.containers entry is not guaranteed to be a map at all.
+func TestReplaceImageNameSkipsNonMapContainerEntry(t *testing.T) {
+	a := NewChangeImageNameAction(logrus.StandardLogger(), nil)
+
+	obj := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]any{
+				"name":      "pod1",
+				"namespace": "default",
+			},
+			"spec": map[string]any{
+				"containers": []any{"not-a-map"},
+			},
+		},
+	}
+
+	configMap := builder.ForConfigMap("velero", "change-image-name").
+		ObjectMeta(builder.WithLabels("velero.io/plugin-config", "", "velero.io/change-image-name", "RestoreItemAction")).
+		Data("specific", "1.1.1.1:5000,2.2.2.2:3000").
+		Result()
+
+	require.NotPanics(t, func() {
+		err := a.replaceImageName(obj, configMap, "spec", "containers")
+		require.NoError(t, err)
+	})
+
+	containers, _, err := unstructured.NestedSlice(obj.UnstructuredContent(), "spec", "containers")
+	require.NoError(t, err)
+	require.Len(t, containers, 1)
+	// the non-map container entry must be left untouched.
+	assert.Equal(t, "not-a-map", containers[0])
+}
