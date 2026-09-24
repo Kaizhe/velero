@@ -177,3 +177,51 @@ func TestChangeImageRepositoryActionExecute(t *testing.T) {
 		})
 	}
 }
+
+// TestReplaceImageNameSkipsNonStringImageField is a regression test for a
+// panic on a crafted/malformed backup: replaceImageName operates on generic
+// unstructured content decoded from a backup tarball, which is untrusted
+// input not validated against the Pod schema before this code runs, so the
+// "image" field is not guaranteed to be a string. Uses a hand-built
+// unstructured object (rather than the table-driven cases above, which all
+// go through a typed corev1api.Pod and so can never produce a non-string
+// image field) to exercise that path directly.
+func TestReplaceImageNameSkipsNonStringImageField(t *testing.T) {
+	a := NewChangeImageNameAction(logrus.StandardLogger(), nil)
+
+	obj := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]any{
+				"name":      "pod1",
+				"namespace": "default",
+			},
+			"spec": map[string]any{
+				"containers": []any{
+					map[string]any{
+						"name":  "container1",
+						"image": float64(5000),
+					},
+				},
+			},
+		},
+	}
+
+	configMap := builder.ForConfigMap("velero", "change-image-name").
+		ObjectMeta(builder.WithLabels("velero.io/plugin-config", "", "velero.io/change-image-name", "RestoreItemAction")).
+		Data("specific", "1.1.1.1:5000,2.2.2.2:3000").
+		Result()
+
+	require.NotPanics(t, func() {
+		err := a.replaceImageName(obj, configMap, "spec", "containers")
+		require.NoError(t, err)
+	})
+
+	containers, _, err := unstructured.NestedSlice(obj.UnstructuredContent(), "spec", "containers")
+	require.NoError(t, err)
+	require.Len(t, containers, 1)
+	// the non-string image field must be left untouched, not modified or
+	// coerced into a string.
+	assert.Equal(t, float64(5000), containers[0].(map[string]any)["image"])
+}
