@@ -162,7 +162,11 @@ func (a *ChangeImageNameAction) replaceImageName(obj *unstructured.Unstructured,
 	for i, container := range containers {
 		log.Infoln("container:", container)
 		if image, ok := container.(map[string]any)["image"]; ok {
-			imageName := image.(string)
+			imageName, isString := image.(string)
+			if !isString {
+				log.Infof("skipping container: image field is not a string (got %T)", image)
+				continue
+			}
 			if exists, newImageName, err := a.isImageReplaceRuleExist(log, imageName, config); exists && err == nil {
 				needUpdateObj = true
 				log.Infof("Updating item's image from %s to %s", imageName, newImageName)
